@@ -176,55 +176,243 @@ param_rand = [
 
 
 
-# ========== ОБУЧЕНИЕ МОДЕЛИ ==========
+# # ========== ОБУЧЕНИЕ МОДЕЛИ ==========
+# for i in tqdm(horizons, desc="Обучение моделей"):
+#     print(f"\n{'='*50}")
+#     print(f"Обучение модели для прогноза на {i} дней вперед")
+#     print(f"{'='*50}")
+    
+#     # Выбираем соответствующий таргет
+#     target_col = f'target_{i}'
+    
+#     # Убеждаемся, что данные очищены для этого таргета
+#     mask = y_train[target_col].notna()
+#     X_train_clean = X_train[mask]
+#     y_train_clean = y_train.loc[mask, target_col]
+    
+#     print(f"Размер тренировочных данных для target_{i}: {X_train_clean.shape}")
+    
+#     current_pipe = create_pipeline(df)  
+
+#     tscv = TimeSeriesSplit(n_splits=5, test_size=min(100, len(X_train_clean)//5))
+    
+#     rand_regression = RandomizedSearchCV(
+#         estimator=current_pipe,
+#         param_distributions=param_rand,
+#         n_iter=5,
+#         cv=tscv,
+#         random_state=SEED,
+#         n_jobs=-1,
+#         scoring='neg_mean_absolute_error',
+#         verbose=1
+#     )
+    
+#     # Обучение модели
+#     rand_regression.fit(X_train_clean, y_train_clean)
+    
+#     # Сохраняем модель
+#     models[f'model_{i}'] = rand_regression.best_estimator_
+    
+#     # Сохраняем результаты
+#     results[f'target_{i}'] = {
+#         'best_score': -rand_regression.best_score_,
+#         'best_params': rand_regression.best_params_,
+#         'model': rand_regression.best_estimator_
+#     }
+    
+#     joblib.dump(rand_regression.best_estimator_, f'models_weight/model_target_{i}.pkl')
+#     print(f"Лучшая MAE: {-rand_regression.best_score_:.4f}")
+
+def check_models_status(horizons):
+    """Проверяет статус сохраненных моделей"""
+    models_count = 0
+    for i in horizons:
+        model_path = f'models_weight/model_target_{i}.pkl'
+        params_path = f'models_weight/params_target_{i}.pkl'
+        if os.path.exists(model_path) and os.path.exists(params_path):
+            models_count += 1
+    
+    print(f"Найдено сохраненных моделей: {models_count} из {len(horizons)}")
+    if models_count == len(horizons):
+        print("РЕЖИМ: Переобучение существующих моделей")
+    elif models_count == 0:
+        print("РЕЖИМ: Первоначальное обучение всех моделей") 
+    else:
+        print("РЕЖИМ: Смешанный - некоторые модели будут переобучены, некоторые созданы заново")
+    return models_count
+
+# Проверка статуса в начале
+print("Проверка существующих моделей...")
+existing_count = check_models_status(horizons)
+
+
+
+
+import os
+import joblib
+from tqdm import tqdm
+
+# ========== ИНИЦИАЛИЗАЦИЯ СЛОВАРЕЙ ДЛЯ МОДЕЛЕЙ ==========
+models = {}  # Этот словарь будем использовать для предсказаний
+results = {}
+
+# ========== ПОДГОТОВКА ПАПКИ ДЛЯ СОХРАНЕНИЯ ==========
+os.makedirs('models_weight', exist_ok=True)
+
+# ========== ПРОВЕРКА СУЩЕСТВОВАНИЯ МОДЕЛЕЙ ==========
+existing_models = {}
+for i in horizons:
+    model_path = f'models_weight/model_target_{i}.pkl'
+    params_path = f'models_weight/params_target_{i}.pkl'
+    
+    # Проверяем, есть ли и модель, и параметры
+    if os.path.exists(model_path) and os.path.exists(params_path):
+        existing_models[i] = {
+            'model_path': model_path,
+            'params_path': params_path
+        }
+
+# ========== ФУНКЦИЯ ДЛЯ ПРОВЕРКИ СТАТУСА МОДЕЛЕЙ ==========
+def check_models_status(horizons):
+    """Проверяет статус сохраненных моделей"""
+    models_count = 0
+    for i in horizons:
+        model_path = f'models_weight/model_target_{i}.pkl'
+        params_path = f'models_weight/params_target_{i}.pkl'
+        if os.path.exists(model_path) and os.path.exists(params_path):
+            models_count += 1
+    
+    print(f"Найдено сохраненных моделей: {models_count} из {len(horizons)}")
+    if models_count == len(horizons):
+        print("РЕЖИМ: Переобучение существующих моделей")
+    elif models_count == 0:
+        print("РЕЖИМ: Первоначальное обучение всех моделей") 
+    else:
+        print("РЕЖИМ: Смешанный - некоторые модели будут переобучены, некоторые созданы заново")
+    return models_count
+
+# Проверка статуса в начале
+print("Проверка существующих моделей...")
+existing_count = check_models_status(horizons)
+
+# ========== АЛГОРИТМ ОБУЧЕНИЯ ==========
 for i in tqdm(horizons, desc="Обучение моделей"):
     print(f"\n{'='*50}")
     print(f"Обучение модели для прогноза на {i} дней вперед")
     print(f"{'='*50}")
     
-    # Выбираем соответствующий таргет
+    # Подготовка данных
     target_col = f'target_{i}'
-    
-    # Убеждаемся, что данные очищены для этого таргета
     mask = y_train[target_col].notna()
     X_train_clean = X_train[mask]
     y_train_clean = y_train.loc[mask, target_col]
     
     print(f"Размер тренировочных данных для target_{i}: {X_train_clean.shape}")
     
-    current_pipe = create_pipeline(df)  
+    model_path = f'models_weight/model_target_{i}.pkl'
+    params_path = f'models_weight/params_target_{i}.pkl'
+    
+    # СЦЕНАРИЙ 1: Модель и параметры уже существуют - переобучаем с фиксированными параметрами
+    if i in existing_models:
+        print(f"Найдены сохраненные параметры для target_{i}. Переобучаем модель...")
+        
+        try:
+            # Загружаем сохраненные гиперпараметры
+            best_params = joblib.load(params_path)
+            print(f"Загружены гиперпараметры: {best_params}")
+            
+            # Создаем новый пайплайн с фиксированными параметрами
+            current_pipe = create_pipeline(df)
+            current_pipe.set_params(**best_params)
+            
+            # Обучаем на текущих данных
+            current_pipe.fit(X_train_clean, y_train_clean)
+            
+            # Сохраняем модель в словарь для последующего использования
+            model_key = f'model_{i}'
+            models[model_key] = current_pipe
+            
+            # Сохраняем результаты
+            results[f'target_{i}'] = {
+                'best_params': best_params,
+                'model': current_pipe,
+                'retrained': True
+            }
+            
+            # Обновляем сохраненную модель
+            joblib.dump(current_pipe, model_path)
+            print(f"Модель переобучена с сохраненными гиперпараметрами")
+            
+        except Exception as e:
+            print(f"Ошибка при загрузке параметров: {e}. Запускаем поиск заново.")
+            # Если ошибка - переходим к сценарию 2
+            del existing_models[i]  # Удаляем из существующих для пересоздания
+    
+    # СЦЕНАРИЙ 2: Модели нет или произошла ошибка - проводим полный поиск
+    if i not in existing_models:
+        print(f"Поиск оптимальных гиперпараметров для target_{i}...")
+        
+        current_pipe = create_pipeline(df)  
+        tscv = TimeSeriesSplit(n_splits=5, test_size=min(100, len(X_train_clean)//5))
+        
+        rand_regression = RandomizedSearchCV(
+            estimator=current_pipe,
+            param_distributions=param_rand,
+            n_iter=5,
+            cv=tscv,
+            random_state=SEED,
+            n_jobs=-1,
+            scoring='neg_mean_absolute_error',
+            verbose=1
+        )
+        
+        # Обучение с поиском гиперпараметров
+        rand_regression.fit(X_train_clean, y_train_clean)
+        
+        # Сохраняем лучшую модель и параметры
+        best_model = rand_regression.best_estimator_
+        best_params = rand_regression.best_params_
+        
+        # Сохраняем модель в словарь для последующего использования
+        model_key = f'model_{i}'
+        models[model_key] = best_model
+        
+        results[f'target_{i}'] = {
+            'best_score': -rand_regression.best_score_,
+            'best_params': best_params,
+            'model': best_model,
+            'retrained': False
+        }
+        
+        # Сохраняем модель и параметры отдельно
+        joblib.dump(best_model, model_path)
+        joblib.dump(best_params, params_path)
+        
+        print(f"Новая модель сохранена. Лучшие параметры: {best_params}")
 
-    tscv = TimeSeriesSplit(n_splits=5, test_size=min(100, len(X_train_clean)//5))
-    
-    rand_regression = RandomizedSearchCV(
-        estimator=current_pipe,
-        param_distributions=param_rand,
-        n_iter=5,
-        cv=tscv,
-        random_state=SEED,
-        n_jobs=-1,
-        scoring='neg_mean_absolute_error',
-        verbose=1
-    )
-    
-    # Обучение модели
-    rand_regression.fit(X_train_clean, y_train_clean)
-    
-    # Сохраняем модель
-    models[f'model_{i}'] = rand_regression.best_estimator_
-    
-    # Сохраняем результаты
-    results[f'target_{i}'] = {
-        'best_score': -rand_regression.best_score_,
-        'best_params': rand_regression.best_params_,
-        'model': rand_regression.best_estimator_
-    }
-    
-    joblib.dump(rand_regression.best_estimator_, f'models_weight/model_target_{i}.pkl')
-    print(f"Лучшая MAE: {-rand_regression.best_score_:.4f}")
-    
+print(f"\n{'='*50}")
+print("СТАТУС ОБУЧЕНИЯ:")
+for i in horizons:
+    model_key = f'model_{i}'
+    if model_key in models:
+        if i in existing_models and results.get(f'target_{i}', {}).get('retrained', False):
+            print(f"target_{i}: ПЕРЕОБУЧЕНА с сохраненными параметрами")
+        else:
+            print(f"target_{i}: НОВАЯ МОДЕЛЬ с подобранными параметрами")
+    else:
+        print(f"target_{i}: ОШИБКА - модель не создана!")
+print(f"{'='*50}")
+
+# ========== ПРОВЕРКА ЧТО ВСЕ МОДЕЛИ В СЛОВАРЕ ==========
+print(f"\nПроверка словаря моделей:")
+print(f"Всего моделей в словаре: {len(models)}")
+for key in models.keys():
+    print(f"  - {key}")
 
 
+
+import os 
+import joblib 
 # ========== ПРЕДСКАЗАНИЕ ==========
 def predict_on_test_set(X_test, models_dict):
     """
